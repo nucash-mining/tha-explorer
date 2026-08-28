@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>THAscan — THA Block Explorer</title>
+<style>
+:root{--navy:#1b2540;--navy2:#111a30;--accent:#f7a233;--accent2:#ffcf7a;--bg:#f5f6fa;--card:#fff;--line:#e4e7ee;--ink:#1c2438;--muted:#6b7488;--good:#1a9d5a;--pos:#8156d6}
+@media(prefers-color-scheme:dark){:root{--bg:#0c1020;--card:#141b30;--line:#26304d;--ink:#e7eaf2;--muted:#8b93a9}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+header{background:linear-gradient(120deg,var(--navy),var(--navy2));color:#fff;padding:14px 0}
+.wrap{max-width:1080px;margin:0 auto;padding:0 16px}
+.top{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.brand{font-weight:800;font-size:19px;color:#fff;display:flex;align-items:center;gap:9px}
+.brand .logo{width:30px;height:30px;border-radius:50%;background:var(--accent);color:#1b2540;display:grid;place-items:center;font-weight:900}
+.search{flex:1;min-width:220px;display:flex;gap:0}
+.search input{flex:1;border:0;border-radius:8px 0 0 8px;padding:9px 12px;font:inherit;background:#fff;color:#1c2438}
+.search button{border:0;border-radius:0 8px 8px 0;background:var(--accent);color:#1b2540;font-weight:700;padding:0 16px;cursor:pointer}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:16px 0}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.stat small{color:var(--muted);font-size:11px;letter-spacing:.05em;text-transform:uppercase}
+.stat b{display:block;font-size:18px;margin-top:3px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;margin:16px 0;overflow:hidden}
+.card h2{margin:0;padding:12px 16px;font-size:15px;border-bottom:1px solid var(--line);background:rgba(127,127,127,.04)}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:9px 16px;border-bottom:1px solid var(--line);font-size:13px;white-space:nowrap}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+td.mono,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 8px;border-radius:20px}
+.tag.pos{background:rgba(129,86,214,.15);color:var(--pos)}.tag.pow{background:rgba(247,162,51,.15);color:var(--accent)}
+.tag.cs{background:rgba(26,157,90,.14);color:var(--good)}
+.kv{padding:4px 16px}.kv .row{display:flex;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.kv .k{color:var(--muted);min-width:150px}.kv .v{flex:1;min-width:200px;word-break:break-all}
+.ellip{max-width:340px;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:bottom}
+.io{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:640px){.io{grid-template-columns:1fr}}
+.io .box{border:1px solid var(--line);border-radius:10px;padding:6px 0}
+.io .box h3{margin:0;padding:6px 12px;font-size:12px;color:var(--muted)}
+.io .ent{padding:6px 12px;border-top:1px solid var(--line);font-size:12px;display:flex;justify-content:space-between;gap:8px}
+.muted{color:var(--muted)}.right{text-align:right}
+footer{color:var(--muted);text-align:center;padding:22px;font-size:12px}
+.loading{padding:30px;text-align:center;color:var(--muted)}
+.note{background:rgba(247,162,51,.09);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;margin:12px 0;font-size:12px}
+</style>
+</head>
+<body>
+<header><div class="wrap top">
+  <a class="brand" href="#/"><span class="logo">Θ</span> THAscan</a>
+  <form class="search" onsubmit="return doSearch(event)">
+    <input id="q" placeholder="Search block height / hash, tx id, or address" spellcheck="false">
+    <button>Search</button>
+  </form>
+</div></header>
+<div class="wrap" id="app"><div class="loading">loading…</div></div>
+<footer>THAscan · community explorer for the THA chain (PoS) · data from a THA full node</footer>
+
+<script>
+// tha-api.wattxchange.app in production; localhost when developing.
+const API = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://127.0.0.1:3021' : 'https://tha-api.wattxchange.app';
+const $=s=>document.querySelector(s);
+const app=()=>$('#app');
+const api=async p=>{const r=await fetch(API+p);if(!r.ok){let e='error';try{e=(await r.json()).error||e}catch{}throw new Error(e)};return r.json()};
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt=n=>Number(n||0).toLocaleString(undefined,{maximumFractionDigits:8});
+const ago=t=>{const s=Math.floor(Date.now()/1000-t);if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'};
+const short=(h,n=12)=>h?h.slice(0,n)+'…'+h.slice(-6):'';
+const link=(t,id,txt,n)=>`<a class="mono" href="#/${t}/${id}">${esc(txt||short(id,n))}</a>`;
+
+function doSearch(e){e.preventDefault();const q=$('#q').value.trim();if(!q)return false;
+  api('/api/search?q='+encodeURIComponent(q)).then(r=>{
+    if(r.type==='unknown'){app().innerHTML='<div class="note">No block, transaction, or address matches “'+esc(q)+'”.</div>';location.hash='#/';}
+    else location.hash='#/'+r.type+'/'+r.id;
+  }).catch(()=>{});return false;}
+
+async function home(){
+  app().innerHTML='<div class="loading">loading network…</div>';
+  const [s,blocks]=await Promise.all([api('/api/status'),api('/api/blocks?n=15')]);
+  app().innerHTML=`
+   <div class="stats">
+     <div class="stat"><small>Height</small><b>${s.blocks.toLocaleString()}</b></div>
+     <div class="stat"><small>Difficulty</small><b>${Number(s.difficulty).toFixed(4)}</b></div>
+     <div class="stat"><small>Net Hashrate</small><b>${(s.networkhashps/1e6).toFixed(2)} MH/s</b></div>
+     <div class="stat"><small>Peers</small><b>${s.connections??'–'}</b></div>
+     <div class="stat"><small>Chain Size</small><b>${(s.sizeOnDisk/1e9).toFixed(2)} GB</b></div>
+     <div class="stat"><small>Node</small><b style="font-size:13px">${esc(s.subversion||'')}</b></div>
+   </div>
+   <div class="card"><h2>Latest Blocks</h2><table>
+     <tr><th>Height</th><th>Age</th><th>Txns</th><th>Type</th><th>Size</th><th>Hash</th></tr>
+     ${blocks.map(b=>`<tr>
+       <td>${link('block',b.height,b.height)}</td>
+       <td class="muted">${ago(b.time)}</td>
+       <td>${b.nTx}</td>
+       <td><span class="tag ${b.type==='PoS'?'pos':'pow'}">${b.type}</span></td>
+       <td class="muted">${b.size} B</td>
+       <td>${link('block',b.hash,short(b.hash))}</td></tr>`).join('')}
+   </table></div>`;
+}
+
+async function viewBlock(id){
+  app().innerHTML='<div class="loading">loading block…</div>';
+  const b=await api('/api/block/'+encodeURIComponent(id));
+  app().innerHTML=`
+   <div class="card"><h2>Block #${b.height} <span class="tag ${b.type==='PoS'?'pos':'pow'}">${b.type}</span></h2>
+    <div class="kv">
+     <div class="row"><span class="k">Hash</span><span class="v mono">${esc(b.hash)}</span></div>
+     <div class="row"><span class="k">Timestamp</span><span class="v">${new Date(b.time*1000).toUTCString()} (${ago(b.time)})</span></div>
+     <div class="row"><span class="k">Transactions</span><span class="v">${b.nTx}</span></div>
+     <div class="row"><span class="k">Size / Weight</span><span class="v">${b.size} B / ${b.weight}</span></div>
+     <div class="row"><span class="k">Difficulty</span><span class="v">${Number(b.difficulty).toFixed(6)}</span></div>
+     <div class="row"><span class="k">Merkle Root</span><span class="v mono">${esc(b.merkleroot)}</span></div>
+     <div class="row"><span class="k">Prev / Next</span><span class="v">${b.previousblockhash?link('block',b.previousblockhash,short(b.previousblockhash)):'–'} ${b.nextblockhash?' → '+link('block',b.nextblockhash,short(b.nextblockhash)):''}</span></div>
+    </div></div>
+   <div class="card"><h2>Transactions (${b.tx.length})</h2><table>
+     <tr><th>Txid</th><th>In/Out</th><th>Value</th><th></th></tr>
+     ${b.tx.map((t,i)=>`<tr>
+       <td>${link('tx',t.txid,short(t.txid,16))}</td>
+       <td class="muted">${t.vin} → ${t.vout}</td>
+       <td>${fmt(t.value)} THA</td>
+       <td>${i===0?'<span class="tag cs">coinbase</span>':(i===1&&b.type==='PoS'?'<span class="tag cs">coinstake</span>':'')}</td></tr>`).join('')}
+   </table></div>`;
+}
+
+async function viewTx(id){
+  app().innerHTML='<div class="loading">loading transaction…</div>';
+  const t=await api('/api/tx/'+id);
+  const io=(arr,side)=>`<div class="box"><h3>${side} (${arr.length})</h3>${arr.map(e=>{
+    if(e.coinbase)return '<div class="ent"><span class="muted">Newly generated (coinbase)</span></div>';
+    const a=e.address?link('address',e.address,short(e.address,14)):'<span class="muted">unparsed</span>';
+    return `<div class="ent">${a}<span>${e.value==null?'':fmt(e.value)+' THA'}</span></div>`;}).join('')||'<div class="ent muted">none</div>'}</div>`;
+  app().innerHTML=`
+   <div class="card"><h2>Transaction ${t.coinstake?'<span class="tag cs">coinstake</span>':t.coinbase?'<span class="tag cs">coinbase</span>':''}</h2>
+    <div class="kv">
+     <div class="row"><span class="k">Txid</span><span class="v mono">${esc(t.txid)}</span></div>
+     <div class="row"><span class="k">Block</span><span class="v">${t.height!=null?link('block',t.height,t.height):'unconfirmed'} · ${t.confirmations||0} confirmations</span></div>
+     <div class="row"><span class="k">Time</span><span class="v">${t.time?new Date(t.time*1000).toUTCString():'–'}</span></div>
+     <div class="row"><span class="k">Value out</span><span class="v">${fmt(t.outTotal)} THA</span></div>
+     <div class="row"><span class="k">Fee</span><span class="v">${fmt(t.fee)} THA</span></div>
+    </div></div>
+   <div class="card"><h2>Inputs & Outputs</h2><div class="kv"><div class="io">${io(t.vin,'Inputs')}${io(t.vout,'Outputs')}</div></div></div>`;
+}
+
+async function viewAddress(id){
+  app().innerHTML='<div class="loading">scanning address (this can take up to a minute — THA has no address index)…</div>';
+  const a=await api('/api/address/'+id);
+  app().innerHTML=`
+   <div class="card"><h2>Address</h2>
+    <div class="kv">
+     <div class="row"><span class="k">Address</span><span class="v mono">${esc(a.address)}</span></div>
+     <div class="row"><span class="k">Balance</span><span class="v"><b>${fmt(a.balance)} THA</b></span></div>
+     <div class="row"><span class="k">Unspent outputs</span><span class="v">${a.utxoCount.toLocaleString()}</span></div>
+    </div></div>
+   ${a.utxoCount>a.utxos.length?`<div class="note">Showing the ${a.utxos.length} most recent of ${a.utxoCount.toLocaleString()} UTXOs.</div>`:''}
+   <div class="card"><h2>Unspent Outputs</h2><table>
+     <tr><th>Txid</th><th>Vout</th><th>Height</th><th class="right">Value</th></tr>
+     ${a.utxos.map(u=>`<tr><td>${link('tx',u.txid,short(u.txid,16))}</td><td>${u.vout}</td><td>${link('block',u.height,u.height)}</td><td class="right">${fmt(u.value)} THA</td></tr>`).join('')||'<tr><td colspan="4" class="muted">no unspent outputs</td></tr>'}
+   </table></div>`;
+}
+
+async function router(){
+  const h=location.hash.replace(/^#\//,'');const [t,id]=h.split('/');
+  try{
+    if(!t) return home();
+    if(t==='block') return viewBlock(id);
+    if(t==='tx') return viewTx(id);
+    if(t==='address') return viewAddress(id);
+    home();
+  }catch(e){app().innerHTML='<div class="note">'+esc(e.message)+'</div>';}
+}
+addEventListener('hashchange',router);
+router();
+setInterval(()=>{if(!location.hash||location.hash==='#/')router();},30000);
+</script>
+</body>
+</html>
