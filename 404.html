@@ -7,6 +7,8 @@
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" href="/tha-logo.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/explorer-shared.css">
+<script src="/explorer-shared.js"></script>
 <style>
 :root{--navy:#1b2540;--navy2:#111a30;--accent:#f7a233;--accent2:#ffcf7a;--bg:#f5f6fa;--card:#fff;--line:#e4e7ee;--ink:#1c2438;--muted:#6b7488;--good:#1a9d5a;--pos:#8156d6}
 @media(prefers-color-scheme:dark){:root{--bg:#0c1020;--card:#141b30;--line:#26304d;--ink:#e7eaf2;--muted:#8b93a9}}
@@ -49,6 +51,7 @@ footer{color:var(--muted);text-align:center;padding:22px;font-size:12px}
 <body>
 <header><div class="wrap top">
   <a class="brand" href="#/"><img class="logo" src="/tha-logo.png" width="30" height="30" alt=""> THAscan</a>
+  <span id="chainbar"></span>
   <form class="search" onsubmit="return doSearch(event)">
     <input id="q" placeholder="Search block height / hash, tx id, or address" spellcheck="false">
     <button>Search</button>
@@ -59,7 +62,8 @@ footer{color:var(--muted);text-align:center;padding:22px;font-size:12px}
 
 <script>
 // tha-api.wattxchange.app in production; localhost when developing.
-const API = (location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://127.0.0.1:3021' : 'https://tha-api.wattxchange.app';
+const API = new URLSearchParams(location.search).get('api')
+  || ((location.hostname==='localhost'||location.hostname==='127.0.0.1') ? 'http://127.0.0.1:3021' : 'https://tha-api.wattxchange.app');
 const $=s=>document.querySelector(s);
 const app=()=>$('#app');
 const api=async p=>{const r=await fetch(API+p);if(!r.ok){let e='error';try{e=(await r.json()).error||e}catch{}throw new Error(e)};return r.json()};
@@ -75,28 +79,47 @@ function doSearch(e){e.preventDefault();const q=$('#q').value.trim();if(!q)retur
     else location.hash='#/'+r.type+'/'+r.id;
   }).catch(()=>{});return false;}
 
-async function home(){
-  app().innerHTML='<div class="loading">loading network…</div>';
-  const [s,blocks]=await Promise.all([api('/api/status'),api('/api/blocks?n=15')]);
-  app().innerHTML=`
-   <div class="stats">
+function statsRow(s){
+  return `
      <div class="stat"><small>Height</small><b>${s.blocks.toLocaleString()}</b></div>
      <div class="stat"><small>Difficulty</small><b>${Number(s.difficulty).toFixed(4)}</b></div>
-     <div class="stat"><small>Net Hashrate</small><b>${(s.networkhashps/1e6).toFixed(2)} MH/s</b></div>
-     <div class="stat"><small>Peers</small><b>${s.connections??'–'}</b></div>
+     <div class="stat"><small>Net Hashrate</small><b>${ExplorerShared.format.hashrate(s.networkhashps)}</b></div>
+     <div class="stat"><small>Peers</small><b>${s.connections??'\u2013'}</b></div>
      <div class="stat"><small>Chain Size</small><b>${(s.sizeOnDisk/1e9).toFixed(2)} GB</b></div>
-     <div class="stat"><small>Node</small><b style="font-size:13px">${esc(s.subversion||'')}</b></div>
-   </div>
-   <div class="card"><h2>Latest Blocks</h2><table>
-     <tr><th>Height</th><th>Age</th><th>Txns</th><th>Type</th><th>Size</th><th>Hash</th></tr>
-     ${blocks.map(b=>`<tr>
-       <td>${link('block',b.height,b.height)}</td>
-       <td class="muted">${ago(b.time)}</td>
-       <td>${b.nTx}</td>
-       <td><span class="tag ${b.type==='PoS'?'pos':'pow'}">${b.type}</span></td>
-       <td class="muted">${b.size} B</td>
-       <td>${link('block',b.hash,short(b.hash))}</td></tr>`).join('')}
-   </table></div>`;
+     <div class="stat"><small>Node</small><b style="font-size:13px">${esc(s.subversion||'')}</b></div>`;
+}
+
+// The stat row refreshes on a timer, but the panel must not: remounting it would
+// throw away whichever tab and page the reader is on.
+let _panel=null,_panelTab=null;
+async function home(tab){
+  tab = tab || 'blocks';
+  if(!document.getElementById('xpanel')){
+    app().innerHTML='<div class="stats" id="xstats"><div class="loading">loading network\u2026</div></div><div id="xpanel"></div>';
+    _panel = mountPanel(tab); _panelTab = tab;
+  } else if(_panel && tab !== _panelTab){
+    _panelTab = tab; _panel.go(tab, null);
+  }
+  refreshStats();
+}
+
+function refreshStats(){
+  return api('/api/status').then(s=>{
+    const el=document.getElementById('xstats');
+    if(el) el.innerHTML=statsRow(s);
+  }).catch(()=>{});
+}
+
+// Blocks / transactions / holders / staking, 50 rows a page, paged in either
+// direction for as far as the chain goes. Tab changes are mirrored into the URL
+// so a view can be linked; the guard stops that write re-entering the router.
+let _navGuard=false;
+function mountPanel(tab){
+  if(!window.ExplorerShared) return null;
+  return ExplorerShared.panel('#xpanel',{chainId:'tha',api:API,tab:tab,onNavigate(t){
+    if(t===_panelTab) return;
+    _panelTab=t; _navGuard=true; location.hash='#/view/'+t;
+  }});
 }
 
 async function viewBlock(id){
@@ -160,18 +183,21 @@ async function viewAddress(id){
 }
 
 async function router(){
+  if(_navGuard){_navGuard=false;return;}
   const h=location.hash.replace(/^#\//,'');const [t,id]=h.split('/');
   try{
     if(!t) return home();
-    if(t==='block') return viewBlock(id);
-    if(t==='tx') return viewTx(id);
-    if(t==='address') return viewAddress(id);
+    if(t==='view') return home(id||'blocks');
+    if(t==='block'){_panel=null;_panelTab=null;return viewBlock(id);}
+    if(t==='tx'){_panel=null;_panelTab=null;return viewTx(id);}
+    if(t==='address'){_panel=null;_panelTab=null;return viewAddress(id);}
     home();
   }catch(e){app().innerHTML='<div class="note">'+esc(e.message)+'</div>';}
 }
+if(window.ExplorerShared) ExplorerShared.chainbar('#chainbar',{chainId:'tha'});
 addEventListener('hashchange',router);
 router();
-setInterval(()=>{if(!location.hash||location.hash==='#/')router();},30000);
+setInterval(()=>{if(document.getElementById('xstats'))refreshStats();},30000);
 </script>
 </body>
 </html>
