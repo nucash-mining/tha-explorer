@@ -46,6 +46,23 @@ td.mono,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 footer{color:var(--muted);text-align:center;padding:22px;font-size:12px}
 .loading{padding:30px;text-align:center;color:var(--muted)}
 .note{background:rgba(247,162,51,.09);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;margin:12px 0;font-size:12px}
+.chartcard h2{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.chartcard h2 .sp{flex:1}
+.ranges{display:flex;gap:4px}
+.ranges button{font:inherit;font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--muted)}
+.ranges button:hover{color:var(--ink)}
+.ranges button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#1b2540}
+.chartbox{position:relative;padding:10px 10px 4px}
+.chartbox svg{display:block;width:100%;height:auto;overflow:visible}
+.chartbox .gl{stroke:var(--line);stroke-width:1}
+.chartbox .axis{fill:var(--muted);font-size:10px}
+.chartbox .ln{fill:none;stroke:var(--accent);stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round}
+.chartbox .ar{fill:url(#hrfill)}
+.chartbox .hit{fill:transparent}
+.chartbox .cur{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3}
+.chartbox .dot{fill:var(--accent);stroke:var(--card);stroke-width:2}
+.tip{position:absolute;pointer-events:none;background:var(--navy);color:#fff;border-radius:8px;padding:6px 9px;font-size:11px;line-height:1.45;white-space:nowrap;transform:translate(-50%,-115%);opacity:0;transition:opacity .1s;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+.tip b{color:var(--accent2)}
 </style>
 </head>
 <body>
@@ -95,8 +112,15 @@ let _panel=null,_panelTab=null;
 async function home(tab){
   tab = tab || 'blocks';
   if(!document.getElementById('xpanel')){
-    app().innerHTML='<div class="stats" id="xstats"><div class="loading">loading network\u2026</div></div><div id="xpanel"></div>';
+    app().innerHTML='<div class="stats" id="xstats"><div class="loading">loading network\u2026</div></div>'
+      + '<div class="card chartcard"><h2>Network Hashrate'
+      + '<span class="sp"></span>'
+      + '<span class="ranges" id="hrranges"></span>'
+      + '<button id="hrscale" class="mono" style="font-size:11px;padding:3px 9px;border-radius:20px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--muted)">log</button>'
+      + '</h2><div class="chartbox" id="hrbox"><div class="loading">loading hashrate history\u2026</div></div></div>'
+      + '<div id="xpanel"></div>';
     _panel = mountPanel(tab); _panelTab = tab;
+    initHashrate();
   } else if(_panel && tab !== _panelTab){
     _panelTab = tab; _panel.go(tab, null);
   }
@@ -120,6 +144,91 @@ function mountPanel(tab){
     if(t===_panelTab) return;
     _panelTab=t; _navGuard=true; location.hash='#/view/'+t;
   }});
+}
+
+// ---- network hashrate chart ---------------------------------------------
+// Full-chain series from /api/hashrate (fixed-step samples, genesis onward).
+// Drawn as inline SVG so the Pages site stays dependency-free.
+const HR_RANGES=[['1M',30],['3M',90],['1Y',365],['All',0]];
+let _hr={data:null,days:0,log:true};
+
+async function initHashrate(){
+  const box=document.getElementById('hrbox'); if(!box) return;
+  const rg=document.getElementById('hrranges');
+  rg.innerHTML=HR_RANGES.map(([l,d])=>`<button data-d="${d}" aria-pressed="${d===_hr.days}">${l}</button>`).join('');
+  rg.onclick=e=>{const b=e.target.closest('button'); if(!b)return;
+    _hr.days=Number(b.dataset.d);
+    [...rg.children].forEach(c=>c.setAttribute('aria-pressed',String(Number(c.dataset.d)===_hr.days)));
+    drawHashrate();};
+  const sc=document.getElementById('hrscale');
+  sc.onclick=()=>{_hr.log=!_hr.log; sc.textContent=_hr.log?'log':'linear'; drawHashrate();};
+  try{
+    const r=await api('/api/hashrate');
+    _hr.data=r.samples||[];
+    if(r.building&&_hr.data.length<50) setTimeout(initHashrate,15000);
+    drawHashrate();
+  }catch(e){ box.innerHTML='<div class="loading">hashrate history unavailable</div>'; }
+}
+
+function drawHashrate(){
+  const box=document.getElementById('hrbox'); if(!box||!_hr.data) return;
+  let d=_hr.data;
+  if(_hr.days>0){const cut=Date.now()/1000-_hr.days*86400; d=d.filter(p=>p.time>=cut);}
+  d=d.filter(p=>p.hashps>0);
+  if(d.length<2){ box.innerHTML='<div class="loading">not enough data for this range</div>'; return; }
+
+  const W=1000,H=230,L=66,R=10,T=12,B=24;
+  const xs=i=>L+(W-L-R)*(i/(d.length-1));
+  const vals=d.map(p=>p.hashps);
+  const lo=Math.min(...vals), hi=Math.max(...vals);
+  // log keeps early-chain values readable next to a 20 MH/s tip
+  const f=v=>_hr.log?Math.log10(Math.max(v,1)):v;
+  let y0=f(lo), y1=f(hi); if(y1-y0<1e-9){y1=y0+1;}
+  const pad=(y1-y0)*0.08; y0-=pad; y1+=pad;
+  const ys=v=>T+(H-T-B)*(1-(f(v)-y0)/(y1-y0));
+
+  const pts=d.map((p,i)=>[xs(i),ys(p.hashps)]);
+  const line=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
+  const area=line+` L${pts[pts.length-1][0].toFixed(1)} ${H-B} L${pts[0][0].toFixed(1)} ${H-B} Z`;
+
+  // gridlines
+  const ticks=[];
+  for(let k=0;k<=4;k++){const v=y0+(y1-y0)*k/4; ticks.push({y:T+(H-T-B)*(1-k/4), v:_hr.log?Math.pow(10,v):v});}
+  const dateLbl=t=>{const x=new Date(t*1000);return x.toLocaleDateString(undefined,{month:'short',year:'2-digit'})};
+
+  box.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="THA network hashrate over time">
+    <defs><linearGradient id="hrfill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="var(--accent)" stop-opacity=".28"/>
+      <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+    </linearGradient></defs>
+    ${ticks.map(t=>`<line class="gl" x1="${L}" y1="${t.y.toFixed(1)}" x2="${W-R}" y2="${t.y.toFixed(1)}"/>
+      <text class="axis" x="${L-6}" y="${(t.y+3).toFixed(1)}" text-anchor="end">${ExplorerShared.format.hashrate(t.v)}</text>`).join('')}
+    <path class="ar" d="${area}"/>
+    <path class="ln" d="${line}"/>
+    <text class="axis" x="${L}" y="${H-6}">${dateLbl(d[0].time)}</text>
+    <text class="axis" x="${W-R}" y="${H-6}" text-anchor="end">${dateLbl(d[d.length-1].time)}</text>
+    <line class="cur" id="hrcur" x1="0" y1="${T}" x2="0" y2="${H-B}" style="opacity:0"/>
+    <circle class="dot" id="hrdot" r="3.5" cx="0" cy="0" style="opacity:0"/>
+    <rect class="hit" id="hrhit" x="${L}" y="${T}" width="${W-L-R}" height="${H-T-B}"/>
+  </svg><div class="tip" id="hrtip"></div>`;
+
+  const svg=box.querySelector('svg'), hit=box.querySelector('#hrhit');
+  const cur=box.querySelector('#hrcur'), dot=box.querySelector('#hrdot'), tip=box.querySelector('#hrtip');
+  const move=ev=>{
+    const r=svg.getBoundingClientRect();
+    const px=(ev.clientX-r.left)/r.width*W;
+    let i=Math.round((px-L)/((W-L-R)/(d.length-1)));
+    i=Math.max(0,Math.min(d.length-1,i));
+    const p=d[i], x=xs(i), y=ys(p.hashps);
+    cur.setAttribute('x1',x); cur.setAttribute('x2',x); cur.style.opacity=1;
+    dot.setAttribute('cx',x); dot.setAttribute('cy',y); dot.style.opacity=1;
+    tip.style.opacity=1;
+    tip.style.left=(x/W*r.width)+'px';
+    tip.style.top=(y/H*r.height)+'px';
+    tip.innerHTML=`<b>${ExplorerShared.format.hashrate(p.hashps)}</b><br>block ${p.height.toLocaleString()}<br>${new Date(p.time*1000).toLocaleDateString()}`;
+  };
+  hit.addEventListener('mousemove',move);
+  hit.addEventListener('mouseleave',()=>{cur.style.opacity=0;dot.style.opacity=0;tip.style.opacity=0;});
 }
 
 async function viewBlock(id){
