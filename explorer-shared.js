@@ -21,6 +21,10 @@ window.EXPLORER_LOGOS = {"alt.png":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUg
   var CHAINS = global.EXPLORER_CHAINS || { chains: [] };
   var LOGOS = global.EXPLORER_LOGOS || {};
   var PAGE = 50;
+  // The rich list is paged 100 at a time and walks the whole address set,
+  // not just the top page. Kept separate from PAGE so block/tx paging is
+  // unaffected. The API caps a page at 200.
+  var HOLDERS_PAGE = 100;
 
   // ---------------------------------------------------------------- helpers
   function el(tag, attrs, kids) {
@@ -358,7 +362,7 @@ window.EXPLORER_LOGOS = {"alt.png":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUg
       holders: function (body, cursor) {
         loading(body);
         var offset = Number(cursor) || 0;
-        src.holders({ limit: PAGE, offset: offset }).then(function (d) {
+        src.holders({ limit: HOLDERS_PAGE, offset: offset }).then(function (d) {
           clear(body);
           if (d.unsupported) return body.appendChild(el('div', { class: 'xs-empty', text:
             'A rich list needs an account-state index, which this chain does not have yet.' }));
@@ -378,10 +382,14 @@ window.EXPLORER_LOGOS = {"alt.png":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUg
             { label: 'Rank', right: 1 }, { label: 'Address' }, { label: 'Balance', right: 1 },
             { label: 'Share', right: 1 }, { label: '' }, { label: 'Txns', right: 1 },
           ], rows));
-          var st = { older: offset + PAGE < d.total ? String(offset + PAGE) : null,
-                     newer: offset > 0 ? String(Math.max(0, offset - PAGE)) : null };
+          var st = { older: offset + HOLDERS_PAGE < d.total ? String(offset + HOLDERS_PAGE) : null,
+                     newer: offset > 0 ? String(Math.max(0, offset - HOLDERS_PAGE)) : null };
+          var pageNo = Math.floor(offset / HOLDERS_PAGE) + 1;
+          var pageCount = Math.max(1, Math.ceil((d.total || 0) / HOLDERS_PAGE));
           var p = pager({ older: st.older, newer: st.newer }, function (c) { ctx.go('holders', c == null ? '0' : c); },
-            num(d.total) + ' addresses · ' + coin(d.supply) + ' ' + chain.chain + ' indexed');
+            'Ranks ' + num(offset + 1) + '\u2013' + num(Math.min(offset + HOLDERS_PAGE, d.total)) +
+            ' of ' + num(d.total) + ' addresses \u00b7 page ' + num(pageNo) + ' of ' + num(pageCount) +
+            ' \u00b7 ' + coin(d.supply) + ' ' + chain.chain + ' indexed');
           p.querySelector('.xs-btn').textContent = '← Prev';
           p.querySelectorAll('.xs-btn')[1].textContent = 'Next →';
           p.querySelectorAll('.xs-btn')[2].textContent = '⇤ Top';
