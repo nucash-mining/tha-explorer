@@ -30,7 +30,13 @@
   position: absolute; z-index: 60; top: calc(100% + 6px); left: 0; min-width: 288px;
   background: var(--xs-card); border: 1px solid var(--xs-line); border-radius: 12px;
   box-shadow: 0 14px 40px rgba(0,0,0,.28); padding: 6px; display: none;
+  /* The list grows with every chain added, so cap it and scroll inside rather
+     than letting it run off the bottom or the right edge of the page. */
+  max-height: min(70vh, 520px); overflow-y: auto; overscroll-behavior: contain;
+  max-width: calc(100vw - 24px); box-sizing: border-box;
 }
+/* Flipped when the menu would otherwise extend past the right edge. */
+.xs-menu[data-align="right"] { left: auto; right: 0; }
 .xs-menu[data-open="1"] { display: block; }
 .xs-menu h4 {
   margin: 4px 8px 6px; font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
