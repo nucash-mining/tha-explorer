@@ -63,6 +63,10 @@ footer{color:var(--muted);text-align:center;padding:22px;font-size:12px}
 .chartbox .dot{fill:var(--accent);stroke:var(--card);stroke-width:2}
 .tip{position:absolute;pointer-events:none;background:var(--navy);color:#fff;border-radius:8px;padding:6px 9px;font-size:11px;line-height:1.45;white-space:nowrap;transform:translate(-50%,-115%);opacity:0;transition:opacity .1s;box-shadow:0 4px 14px rgba(0,0,0,.25)}
 .tip b{color:var(--accent2)}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;padding:8px 12px 4px;font-size:11px}
+.legend span{display:inline-flex;align-items:center;gap:5px;cursor:pointer;color:var(--muted)}
+.legend span.off{opacity:.35;text-decoration:line-through}
+.legend i{width:9px;height:9px;border-radius:2px;display:inline-block;flex:none}
 </style>
 </head>
 <body>
@@ -115,6 +119,7 @@ async function home(tab){
     app().innerHTML='<div class="stats" id="xstats"><div class="loading">loading network\u2026</div></div>'
       + '<div class="card chartcard"><h2>Network Hashrate'
       + '<span class="sp"></span>'
+      + '<span class="ranges" id="hrmode"><button data-m="total" aria-pressed="true">Total</button><button data-m="miners" aria-pressed="false">By miner</button></span>'
       + '<span class="ranges" id="hrranges"></span>'
       + '<button id="hrscale" class="mono" style="font-size:11px;padding:3px 9px;border-radius:20px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--muted)">log</button>'
       + '</h2><div class="chartbox" id="hrbox"><div class="loading">loading hashrate history\u2026</div></div></div>'
@@ -147,10 +152,12 @@ function mountPanel(tab){
 }
 
 // ---- network hashrate chart ---------------------------------------------
-// Full-chain series from /api/hashrate (fixed-step samples, genesis onward).
-// Drawn as inline SVG so the Pages site stays dependency-free.
+// Full-chain series from /api/hashrate (fixed-step samples, genesis onward) and
+// per-staker breakdown from /api/hashrate/miners. Inline SVG, no CDN.
 const HR_RANGES=[['1M',30],['3M',90],['1Y',365],['All',0]];
-let _hr={data:null,days:0,log:true};
+const HR_COLORS=['#f7a233','#4ea1ff','#57c98b','#e0629b','#b98cff','#f2d24b','#41c9c0','#ff8a5c'];
+const HR_TOP=8;
+let _hr={data:null,mdata:{},days:0,log:true,mode:'total',hidden:new Set()};
 
 async function initHashrate(){
   const box=document.getElementById('hrbox'); if(!box) return;
@@ -159,7 +166,12 @@ async function initHashrate(){
   rg.onclick=e=>{const b=e.target.closest('button'); if(!b)return;
     _hr.days=Number(b.dataset.d);
     [...rg.children].forEach(c=>c.setAttribute('aria-pressed',String(Number(c.dataset.d)===_hr.days)));
-    drawHashrate();};
+    refreshHashrate();};
+  const md=document.getElementById('hrmode');
+  md.onclick=e=>{const b=e.target.closest('button'); if(!b)return;
+    _hr.mode=b.dataset.m;
+    [...md.children].forEach(c=>c.setAttribute('aria-pressed',String(c.dataset.m===_hr.mode)));
+    refreshHashrate();};
   const sc=document.getElementById('hrscale');
   sc.onclick=()=>{_hr.log=!_hr.log; sc.textContent=_hr.log?'log':'linear'; drawHashrate();};
   try{
@@ -170,65 +182,99 @@ async function initHashrate(){
   }catch(e){ box.innerHTML='<div class="loading">hashrate history unavailable</div>'; }
 }
 
-function drawHashrate(){
-  const box=document.getElementById('hrbox'); if(!box||!_hr.data) return;
-  let d=_hr.data;
-  if(_hr.days>0){const cut=Date.now()/1000-_hr.days*86400; d=d.filter(p=>p.time>=cut);}
-  d=d.filter(p=>p.hashps>0);
-  if(d.length<2){ box.innerHTML='<div class="loading">not enough data for this range</div>'; return; }
+async function refreshHashrate(){
+  const box=document.getElementById('hrbox');
+  if(_hr.mode==='miners' && !_hr.mdata[_hr.days]){
+    box.innerHTML='<div class="loading">loading per-miner history\u2026</div>';
+    try{ _hr.mdata[_hr.days]=await api(`/api/hashrate/miners?top=${HR_TOP}&days=${_hr.days}`); }
+    catch(e){ box.innerHTML='<div class="loading">per-miner history unavailable</div>'; return; }
+  }
+  drawHashrate();
+}
 
-  const W=1000,H=230,L=66,R=10,T=12,B=24;
-  const xs=i=>L+(W-L-R)*(i/(d.length-1));
-  const vals=d.map(p=>p.hashps);
-  const lo=Math.min(...vals), hi=Math.max(...vals);
-  // log keeps early-chain values readable next to a 20 MH/s tip
+// a staker's per-bucket share is spiky; smooth it so trends are readable
+function hrSmooth(a,w){ if(w<2) return a.slice();
+  const o=[];for(let i=0;i<a.length;i++){let s=0,n=0;
+    for(let k=Math.max(0,i-w+1);k<=i;k++){s+=a[k];n++;} o.push(s/n);} return o;}
+
+function drawHashrate(){
+  const box=document.getElementById('hrbox'); if(!box) return;
+  const miners=_hr.mode==='miners';
+  let base, series=[];
+  if(miners){
+    const m=_hr.mdata[_hr.days]; if(!m||!m.buckets) return;
+    base=m.buckets.map(b=>({time:b.time,height:b.height,hashps:b.hashps}));
+    series=(m.producers||[]).map((p,i)=>({name:p.address,color:HR_COLORS[i%HR_COLORS.length],
+      vals:hrSmooth(p.series,5),blocks:p.blocks}));
+    if(m.others) series.push({name:'others',color:'var(--muted)',vals:hrSmooth(m.others,5),blocks:null});
+  }else{
+    if(!_hr.data) return;
+    let d=_hr.data;
+    if(_hr.days>0){const cut=Date.now()/1000-_hr.days*86400; d=d.filter(p=>p.time>=cut);}
+    base=d.filter(p=>p.hashps>0);
+    series=[{name:'network',color:'var(--accent)',vals:base.map(p=>p.hashps),area:true}];
+  }
+  if(base.length<2){ box.innerHTML='<div class="loading">not enough data for this range</div>'; return; }
+
+  const vis=series.filter(s=>!_hr.hidden.has(s.name));
+  const W=1000,H=260,L=66,R=10,T=12,B=24;
+  const xs=i=>L+(W-L-R)*(i/(base.length-1));
+  let all=[];vis.forEach(s=>s.vals.forEach(v=>{if(v>0)all.push(v)}));
+  if(!all.length) all=[1];
+  const lo=Math.min(...all),hi=Math.max(...all);
   const f=v=>_hr.log?Math.log10(Math.max(v,1)):v;
-  let y0=f(lo), y1=f(hi); if(y1-y0<1e-9){y1=y0+1;}
+  let y0=f(lo),y1=f(hi); if(y1-y0<1e-9) y1=y0+1;
   const pad=(y1-y0)*0.08; y0-=pad; y1+=pad;
   const ys=v=>T+(H-T-B)*(1-(f(v)-y0)/(y1-y0));
 
-  const pts=d.map((p,i)=>[xs(i),ys(p.hashps)]);
-  const line=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
-  const area=line+` L${pts[pts.length-1][0].toFixed(1)} ${H-B} L${pts[0][0].toFixed(1)} ${H-B} Z`;
+  const pathOf=vals=>{let d='',pen=false;
+    vals.forEach((v,i)=>{ if(v<=0&&_hr.log){pen=false;return;}
+      d+=(pen?'L':'M')+xs(i).toFixed(1)+' '+ys(v).toFixed(1)+' '; pen=true;});
+    return d.trim();};
 
-  // gridlines
-  const ticks=[];
-  for(let k=0;k<=4;k++){const v=y0+(y1-y0)*k/4; ticks.push({y:T+(H-T-B)*(1-k/4), v:_hr.log?Math.pow(10,v):v});}
-  const dateLbl=t=>{const x=new Date(t*1000);return x.toLocaleDateString(undefined,{month:'short',year:'2-digit'})};
+  const ticks=[];for(let k=0;k<=4;k++){const v=y0+(y1-y0)*k/4;
+    ticks.push({y:T+(H-T-B)*(1-k/4),v:_hr.log?Math.pow(10,v):v});}
+  const dateLbl=t=>new Date(t*1000).toLocaleDateString(undefined,{month:'short',year:'2-digit'});
+
+  const areaTop=vis[0]&&vis[0].area?`<path class="ar" d="${pathOf(vis[0].vals)} L${xs(base.length-1).toFixed(1)} ${H-B} L${xs(0).toFixed(1)} ${H-B} Z"/>`:'';
 
   box.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="THA network hashrate over time">
     <defs><linearGradient id="hrfill" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="var(--accent)" stop-opacity=".28"/>
-      <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
-    </linearGradient></defs>
+      <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>
     ${ticks.map(t=>`<line class="gl" x1="${L}" y1="${t.y.toFixed(1)}" x2="${W-R}" y2="${t.y.toFixed(1)}"/>
       <text class="axis" x="${L-6}" y="${(t.y+3).toFixed(1)}" text-anchor="end">${ExplorerShared.format.hashrate(t.v)}</text>`).join('')}
-    <path class="ar" d="${area}"/>
-    <path class="ln" d="${line}"/>
-    <text class="axis" x="${L}" y="${H-6}">${dateLbl(d[0].time)}</text>
-    <text class="axis" x="${W-R}" y="${H-6}" text-anchor="end">${dateLbl(d[d.length-1].time)}</text>
+    ${areaTop}
+    ${vis.map(s=>`<path class="ln" style="stroke:${s.color}" d="${pathOf(s.vals)}"/>`).join('')}
+    <text class="axis" x="${L}" y="${H-6}">${dateLbl(base[0].time)}</text>
+    <text class="axis" x="${W-R}" y="${H-6}" text-anchor="end">${dateLbl(base[base.length-1].time)}</text>
     <line class="cur" id="hrcur" x1="0" y1="${T}" x2="0" y2="${H-B}" style="opacity:0"/>
-    <circle class="dot" id="hrdot" r="3.5" cx="0" cy="0" style="opacity:0"/>
     <rect class="hit" id="hrhit" x="${L}" y="${T}" width="${W-L-R}" height="${H-T-B}"/>
-  </svg><div class="tip" id="hrtip"></div>`;
+  </svg><div class="tip" id="hrtip"></div>
+  ${miners?`<div class="legend" id="hrleg">${series.map(s=>
+    `<span data-n="${esc(s.name)}" class="${_hr.hidden.has(s.name)?'off':''}"><i style="background:${s.color}"></i>${
+      s.name==='others'?'others':esc(short(s.name,10))}${s.blocks!=null?` <span class="muted">${s.blocks.toLocaleString()}b</span>`:''}</span>`
+    ).join('')}</div>`:''}`;
 
-  const svg=box.querySelector('svg'), hit=box.querySelector('#hrhit');
-  const cur=box.querySelector('#hrcur'), dot=box.querySelector('#hrdot'), tip=box.querySelector('#hrtip');
-  const move=ev=>{
+  if(miners){
+    box.querySelector('#hrleg').onclick=e=>{const t=e.target.closest('span[data-n]'); if(!t)return;
+      const n=t.dataset.n; _hr.hidden.has(n)?_hr.hidden.delete(n):_hr.hidden.add(n); drawHashrate();};
+  }
+
+  const svg=box.querySelector('svg'),hit=box.querySelector('#hrhit');
+  const cur=box.querySelector('#hrcur'),tip=box.querySelector('#hrtip');
+  hit.addEventListener('mousemove',ev=>{
     const r=svg.getBoundingClientRect();
-    const px=(ev.clientX-r.left)/r.width*W;
-    let i=Math.round((px-L)/((W-L-R)/(d.length-1)));
-    i=Math.max(0,Math.min(d.length-1,i));
-    const p=d[i], x=xs(i), y=ys(p.hashps);
-    cur.setAttribute('x1',x); cur.setAttribute('x2',x); cur.style.opacity=1;
-    dot.setAttribute('cx',x); dot.setAttribute('cy',y); dot.style.opacity=1;
-    tip.style.opacity=1;
-    tip.style.left=(x/W*r.width)+'px';
-    tip.style.top=(y/H*r.height)+'px';
-    tip.innerHTML=`<b>${ExplorerShared.format.hashrate(p.hashps)}</b><br>block ${p.height.toLocaleString()}<br>${new Date(p.time*1000).toLocaleDateString()}`;
-  };
-  hit.addEventListener('mousemove',move);
-  hit.addEventListener('mouseleave',()=>{cur.style.opacity=0;dot.style.opacity=0;tip.style.opacity=0;});
+    let i=Math.round(((ev.clientX-r.left)/r.width*W-L)/((W-L-R)/(base.length-1)));
+    i=Math.max(0,Math.min(base.length-1,i));
+    const x=xs(i); cur.setAttribute('x1',x); cur.setAttribute('x2',x); cur.style.opacity=1;
+    tip.style.opacity=1; tip.style.left=(x/W*r.width)+'px'; tip.style.top=(ys(vis[0].vals[i]||1)/H*r.height)+'px';
+    tip.innerHTML=`block ${base[i].height.toLocaleString()} · ${new Date(base[i].time*1000).toLocaleDateString()}<br>`
+      + vis.slice(0,6).map(s=>`<span style="color:${s.color}">\u25a0</span> ${
+          s.name==='network'?'network':(s.name==='others'?'others':short(s.name,8))}: <b>${
+          ExplorerShared.format.hashrate(s.vals[i]||0)}</b>`).join('<br>');
+  });
+  hit.addEventListener('mouseleave',()=>{cur.style.opacity=0;tip.style.opacity=0;});
 }
 
 async function viewBlock(id){
