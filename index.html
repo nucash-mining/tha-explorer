@@ -329,6 +329,7 @@ async function viewAddress(id){
      <div class="row"><span class="k">Address</span><span class="v mono">${esc(a.address)}</span></div>
      <div class="row"><span class="k">Balance</span><span class="v"><b>${fmt(a.balance)} THA</b></span></div>
      <div class="row"><span class="k">Unspent outputs</span><span class="v">${a.utxoCount.toLocaleString()}</span></div>
+     ${a.blocksProduced!=null?`<div class="row"><span class="k">Blocks produced</span><span class="v">${a.blocksProduced.toLocaleString()}${a.blocksProduced?` · ${fmt(a.producedReward)} THA reward`:''}</span></div>`:''}
     </div></div>
    ${a.utxoCount>a.utxos.length?`<div class="note">Showing the ${a.utxos.length} most recent of ${a.utxoCount.toLocaleString()} UTXOs.</div>`:''}
    <div class="card"><h2>Unspent Outputs</h2><table>
